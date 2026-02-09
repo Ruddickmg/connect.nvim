@@ -31,6 +31,8 @@ local createBlankSqlBuffer = function()
 	vim.api.nvim_buf_set_name(buffer, "embedded-sql")
 	vim.api.nvim_set_option_value("buftype", "", { buf = buffer })
 	vim.api.nvim_set_option_value("filetype", "sql", { buf = buffer })
+	vim.api.nvim_set_option_value("modifiable", true, { buf = buffer })
+	vim.api.nvim_set_option_value("swapfile", false, { buf = buffer })
 	return buffer
 end
 
@@ -46,8 +48,6 @@ local createSqlBuffer = function(captures, buffer, scratch_buffer)
 	local lines = {}
 	local empty = ""
 	local start = 0
-
-	vim.api.nvim_buf_set_option(scratch_buffer, "modifiable", true)
 
 	for _, node in captures do
 		local text = treesitter.get_node_text(node, buffer)
@@ -69,8 +69,6 @@ local createSqlBuffer = function(captures, buffer, scratch_buffer)
 	end
 
 	vim.api.nvim_buf_set_lines(scratch_buffer, 0, 0, true, lines)
-
-	vim.notify("scratch buffer: " .. scratch_buffer .. ", main buffer:" .. buffer)
 
 	vim.lsp.start({
 		name = "postgres_ls",
@@ -129,6 +127,30 @@ return {
 				local scratch_buffer = createBlankSqlBuffer()
 
 				vim.api.nvim_open_win(copyBuffer(buffer, scratch_buffer, captures, query_string), true, win_options)
+
+				-- Not sure of a better way to fix this, without this it keeps attaching to non SQL buffers
+				vim.api.nvim_create_autocmd("LspAttach", {
+					pattern = "*",
+					group = group,
+					callback = function(args)
+						local bufnr = args.buf
+						if bufnr ~= scratch_buffer then
+							local clients = vim.lsp.buf_get_clients(bufnr)
+							local client = nil
+							for _, c in pairs(clients) do
+								if c.name == "postgres_ls" then
+									client = c
+									break
+								end
+							end
+							if client then
+								vim.notify("client id:" .. client.id)
+								vim.lsp.buf_detach_client(bufnr, client.id)
+							end
+						end
+					end,
+				})
+
 				vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
 					pattern = { "*.rs", "*.js", "*.jsx", "*.ts", "*.tsx" },
 					group = group,
