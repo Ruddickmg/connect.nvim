@@ -44,29 +44,38 @@ local generate_spaces = function(amount)
 	return spaces
 end
 
-local createSqlBuffer = function(captures, buffer, scratch_buffer)
+local createSqlBuffer = function(matches, buffer, scratch_buffer)
 	local lines = {}
 	local empty = ""
 	local start = 0
+	local count = 0
 
-	for _, node in captures do
-		local text = treesitter.get_node_text(node, buffer)
-		local start_row, start_col = node:start()
-		local end_row = node:end_()
-		local leading_spaces = generate_spaces(start_col)
+	for _, match in matches do
+		for _, nodes in pairs(match) do
+			for _, node in ipairs(nodes) do
+				local text = treesitter.get_node_text(node, buffer)
+				count = count + 1
+				vim.notify("text: " .. text .. ", count: " .. count)
+				local start_row, start_col = node:start()
+				local end_row = node:end_()
+				local leading_spaces = generate_spaces(start_col)
 
-		for _ = start, start_row - 1 do
-			table.insert(lines, empty)
+				for _ = start, start_row - 1 do
+					table.insert(lines, empty)
+				end
+
+				for line in text:gmatch("[^\r\n]+") do
+					table.insert(lines, line)
+				end
+
+				lines[start_row + 1] = leading_spaces .. lines[start_row + 1]
+
+				start = end_row + 1
+			end
 		end
-
-		for line in text:gmatch("[^\r\n]+") do
-			table.insert(lines, line)
-		end
-
-		lines[start_row + 1] = leading_spaces .. lines[start_row + 1]
-
-		start = end_row + 1
 	end
+
+	vim.notify("total: " .. count)
 
 	vim.api.nvim_buf_set_lines(scratch_buffer, 0, 0, true, lines)
 
@@ -82,7 +91,7 @@ local getCaptures = function(buf, query_string)
 	local filetype = vim.bo.filetype
 	local query = treesitter.query.parse(filetype, query_string)
 	local root = treesitter.get_parser(buf, filetype):parse()[1]:root()
-	local captures = query:iter_captures(root, buf)
+	local captures = query:iter_matches(root, buf, 0, -1)
 	local captures_exist = false
 
 	for _ in captures do
@@ -118,9 +127,10 @@ return {
 		}
 
 		if error then
-			vim.notify(error, "error")
+			vim.notify(error, vim.log.levels.ERROR)
 		else
 			local group = vim.api.nvim_create_augroup("embedded-sql", { clear = true })
+			local namespace = vim.api.nvim_create_namespace("embedded-sql")
 			local buffer = vim.api.nvim_get_current_buf()
 			local captures = getCaptures(buffer, query_string)
 			if captures then
@@ -135,7 +145,7 @@ return {
 					callback = function(args)
 						local bufnr = args.buf
 						if bufnr ~= scratch_buffer then
-							local clients = vim.lsp.buf_get_clients(bufnr)
+							local clients = vim.lsp.get_clients()
 							local client = nil
 							for _, c in pairs(clients) do
 								if c.name == "postgres_ls" then
@@ -144,7 +154,6 @@ return {
 								end
 							end
 							if client then
-								vim.notify("client id:" .. client.id)
 								vim.lsp.buf_detach_client(bufnr, client.id)
 							end
 						end
@@ -157,8 +166,11 @@ return {
 					callback = function()
 						local current_captures = getCaptures(buffer, query_string)
 						if current_captures then
-							vim.notify("doing stuff")
-							copyBuffer(buffer, clear_buffer(scratch_buffer), current_captures, query_string)
+							local copied_buffer =
+								copyBuffer(buffer, clear_buffer(scratch_buffer), current_captures, query_string)
+							local diagnostics = vim.diagnostic.get(copied_buffer)
+							vim.diagnostic.reset(namespace, 0)
+							vim.diagnostic.set(namespace, 0, diagnostics, {})
 						end
 					end,
 				})
